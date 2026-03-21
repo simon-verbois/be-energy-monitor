@@ -1,0 +1,27 @@
+services:
+  energy-monitor:
+    build: .
+    image: belgian-energy-monitor:latest
+    container_name: energy-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/data/energy.db
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import sqlite3, os; sqlite3.connect(os.environ.get('DB_PATH','/data/energy.db')).close()"
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

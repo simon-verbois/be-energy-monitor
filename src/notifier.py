@@ -1,0 +1,579 @@
+"""
+notifier.py — Email notification module.
+
+Builds mobile-first HTML emails with CID-embedded chart images and sends
+them via SMTP. Supports two modes controlled by SMTP_AUTH:
+  - "starttls" (default) : EHLO → STARTTLS → login  (e.g. Gmail, Office 365)
+  - "none"               : plain SMTP relay, no authentication required
+
+The From address is taken from SMTP_FROM (defaults to SMTP_USER when auth
+is enabled, or must be set explicitly when using an unauthenticated relay).
+
+Public API:
+    send_oil_alert(cfg, result, avg_7day, oil_png)
+    send_elec_alert(cfg, result, ceiling, elec_png)
+    send_daily_digest(cfg, latest_oil, latest_elec, oil_records, elec_records, oil_png, elec_png)
+    send_weekly_summary(cfg, oil_records, elec_records, oil_png, elec_png)
+    send_system_alert(cfg, source_name, error_message)
+"""
+
+from __future__ import annotations
+
+import logging
+import smtplib
+from datetime import datetime
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from zoneinfo import ZoneInfo
+
+log = logging.getLogger(__name__)
+
+BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
+
+# ── Design constants (inline CSS values) ─────────────────────────────────────
+C_PRIMARY   = "#1565C0"
+C_DANGER    = "#C62828"
+C_SUCCESS   = "#2E7D32"
+C_WARNING   = "#F57F17"
+C_BG        = "#F5F5F5"
+C_WHITE     = "#FFFFFF"
+C_BORDER    = "#E0E0E0"
+C_TEXT      = "#212121"
+C_MUTED     = "#757575"
+COLOR_GAS   = "#00695C"   # teal — natural gas sections
+
+_FR_MONTHS = [
+    "", "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+    "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+]
+
+
+def _fr_month_year(value) -> str:
+    """Format a date or 'YYYY-MM' string as 'Mars 2026'."""
+    if isinstance(value, str):
+        from datetime import datetime as _dt
+        value = _dt.strptime(value, "%Y-%m").date()
+    return f"{_FR_MONTHS[value.month]} {value.year}"
+
+
+# ── Low-level send helper ─────────────────────────────────────────────────────
+
+def _send(cfg, subject: str, html_body: str, images: dict[str, bytes]) -> None:
+    """
+    Construct and send a multipart/related HTML email with CID-embedded images.
+
+    SMTP behaviour is controlled by cfg.SMTP_AUTH:
+      "starttls"  — EHLO → STARTTLS → login (requires SMTP_USER / SMTP_PASSWORD)
+      "none"      — plain relay, no authentication (SMTP_USER / SMTP_PASSWORD ignored)
+
+    The From header always uses cfg.SMTP_FROM.
+    """
+    sender = cfg.SMTP_FROM
+
+    # Outer container: multipart/related (body + inline images)
+    msg = MIMEMultipart("related")
+    msg["Subject"]  = subject
+    msg["From"]     = sender
+    msg["To"]       = cfg.ALERT_EMAIL_TO
+    msg["X-Mailer"] = "BelgianEnergyMonitor/1.0"
+
+    # Alternative wrapper (text/html inside multipart/alternative for compatibility)
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(alt)
+
+    # Attach chart images with Content-ID headers (RFC 2387)
+    for cid_key, png_bytes in images.items():
+        img = MIMEImage(png_bytes, "png")
+        img.add_header("Content-ID", f"<{cid_key}>")          # angle brackets in header
+        img.add_header("Content-Disposition", "inline", filename=f"{cid_key}.png")
+        msg.attach(img)
+
+    log.info("Sending email '%s' to %s via %s:%s (auth=%s)",
+             subject, cfg.ALERT_EMAIL_TO, cfg.SMTP_SERVER, cfg.SMTP_PORT, cfg.SMTP_AUTH)
+
+    try:
+        with smtplib.SMTP(cfg.SMTP_SERVER, cfg.SMTP_PORT, timeout=30) as server:
+            server.ehlo()
+            if cfg.SMTP_AUTH == "starttls":
+                server.starttls()
+                server.ehlo()
+                server.login(cfg.SMTP_USER, cfg.SMTP_PASSWORD)
+            # "none": relay without authentication — skip TLS and login entirely
+            server.sendmail(sender, [cfg.ALERT_EMAIL_TO], msg.as_string())
+        log.info("Email sent successfully.")
+    except smtplib.SMTPException as exc:
+        log.error("SMTP error while sending email: %s", exc)
+        raise
+
+
+# ── HTML building blocks ──────────────────────────────────────────────────────
+
+def _now_brussels() -> str:
+    return datetime.now(BRUSSELS_TZ).strftime("%d %b %Y, %H:%M (Brussels)")
+
+
+def _html_shell(content: str) -> str:
+    """Wrap content in the full email HTML skeleton (full-width, no grey background)."""
+    now = _now_brussels()
+    return f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>Belgian Energy Monitor</title>
+</head>
+<body style="margin:0;padding:0;background-color:{C_WHITE};font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;mso-line-height-rule:exactly;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+         style="background-color:{C_WHITE};">
+    <tr>
+      <td>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+               style="background-color:{C_WHITE};">
+
+          <!-- Header -->
+          <tr>
+            <td style="background-color:{C_PRIMARY};padding:22px 24px;text-align:center;">
+              <h1 style="margin:0;font-size:20px;font-weight:700;color:{C_WHITE};
+                         letter-spacing:0.5px;">
+                🇧🇪 Belgian Energy Monitor
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Dynamic content -->
+          {content}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:14px 24px;text-align:center;
+                       border-top:1px solid {C_BORDER};">
+              <p style="margin:0;font-size:11px;color:{C_MUTED};">
+                Généré le {now} · Sources : SPF Économie · TotalEnergies
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+def _alert_banner(color: str, emoji: str, title: str, body: str) -> str:
+    return f"""
+  <tr>
+    <td style="padding:20px 24px 0;">
+      <div style="background-color:{color}15;border-left:4px solid {color};
+                  border-radius:0 4px 4px 0;padding:14px 16px;">
+        <p style="margin:0 0 4px;font-size:15px;font-weight:700;color:{color};">
+          {emoji}&nbsp; {title}
+        </p>
+        <p style="margin:0;font-size:14px;color:{C_TEXT};">{body}</p>
+      </div>
+    </td>
+  </tr>"""
+
+
+def _section_title(title: str, color: str = C_PRIMARY) -> str:
+    return f"""
+  <tr>
+    <td style="padding:20px 24px 8px;">
+      <h2 style="margin:0;font-size:16px;font-weight:700;color:{color};
+                 border-bottom:2px solid {color};padding-bottom:6px;">
+        {title}
+      </h2>
+    </td>
+  </tr>"""
+
+
+def _price_table(rows: list[tuple[str, str, str]]) -> str:
+    """
+    rows: list of (label, value, note) tuples.
+    Alternating row background for readability.
+    """
+    html_rows = ""
+    for i, (label, value, note) in enumerate(rows):
+        bg = C_BG if i % 2 == 0 else C_WHITE
+        note_html = f'<span style="font-size:11px;color:{C_MUTED};"> {note}</span>' if note else ""
+        html_rows += f"""
+        <tr style="background-color:{bg};">
+          <td style="padding:9px 12px;border:1px solid {C_BORDER};font-size:13px;
+                     color:{C_TEXT};width:60%;">{label}</td>
+          <td style="padding:9px 12px;border:1px solid {C_BORDER};font-size:14px;
+                     color:{C_TEXT};font-weight:700;">{value}{note_html}</td>
+        </tr>"""
+    return f"""
+  <tr>
+    <td style="padding:0 24px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+             style="border-collapse:collapse;">
+        {html_rows}
+      </table>
+    </td>
+  </tr>"""
+
+
+def _chart_row(cid: str, alt_text: str) -> str:
+    return f"""
+  <tr>
+    <td style="padding:0 24px 20px;">
+      <img src="cid:{cid}" alt="{alt_text}"
+           style="width:100%;height:auto;display:block;
+                  border:1px solid {C_BORDER};border-radius:4px;" />
+    </td>
+  </tr>"""
+
+
+def _divider() -> str:
+    return f'<tr><td style="padding:0 24px;"><hr style="border:none;border-top:1px solid {C_BORDER};margin:4px 0;"></td></tr>'
+
+
+# ── Public email builders ─────────────────────────────────────────────────────
+
+def send_oil_alert(cfg, result, avg_7day: float, oil_png: bytes) -> None:
+    """Send an alert email when the oil price drops significantly below the 7-day average."""
+    drop_pct = (avg_7day - result.price_below_2000) / avg_7day * 100
+    banner = _alert_banner(
+        C_DANGER, "🛢️",
+        "Baisse du prix du mazout",
+        f"Le prix actuel ({result.price_below_2000:.4f} €/L) est "
+        f"<strong>{drop_pct:.1f}%</strong> inférieur à la moyenne des 7 derniers jours "
+        f"({avg_7day:.4f} €/L).",
+    )
+    table = _price_table([
+        ("Moins de 2 000 L (TTC)", f"{result.price_below_2000:.4f} €/L", "actuel"),
+        ("À partir de 2 000 L (TTC)", f"{result.price_above_2000:.4f} €/L", "actuel"),
+        ("Moyenne 7 jours (< 2 000 L)", f"{avg_7day:.4f} €/L", ""),
+        ("Baisse constatée", f"{drop_pct:.1f}%", ""),
+        ("Valable depuis", result.valid_from.strftime("%d/%m/%Y"), ""),
+    ])
+    chart = _chart_row("oil_chart", "Évolution du prix du mazout — 30 jours")
+    content = (
+        banner
+        + _section_title("📊 Détail du Tarif Mazout")
+        + table
+        + _section_title("📈 Évolution — 30 jours")
+        + chart
+    )
+    html = _html_shell(content)
+    _send(cfg, f"Alerte mazout — Baisse de {drop_pct:.1f}%", html, {"oil_chart": oil_png})
+
+
+def send_elec_alert(cfg, result, ceiling: float, elec_png: bytes) -> None:
+    """Send an alert email when the TotalEnergies day tariff drops below the ceiling."""
+    day   = result.price_day    # €/kWh
+    night = result.price_night  # €/kWh
+    banner = _alert_banner(
+        C_SUCCESS, "⚡",
+        "Tarif électricité sous le seuil",
+        f"Le tarif Jour (<strong>{day * 100:.2f} c€/kWh</strong>) "
+        f"est passé sous votre seuil d'alerte de {ceiling * 100:.2f} c€/kWh.",
+    )
+    table = _price_table([
+        ("Tarif Jour (HP)",   f"{day:.5f} €/kWh",   f"({day * 100:.2f} c€/kWh)"),
+        ("Tarif Nuit (HC)",   f"{night:.5f} €/kWh", f"({night * 100:.2f} c€/kWh)"),
+        ("Seuil d'alerte",    f"{ceiling:.5f} €/kWh", f"({ceiling * 100:.2f} c€/kWh)"),
+        ("Valable depuis",    _fr_month_year(result.valid_from), "TotalEnergies"),
+    ])
+    chart = _chart_row("elec_chart", "Évolution du tarif électricité")
+    content = (
+        banner
+        + _section_title("⚡ Détail du Tarif Électricité", C_SUCCESS)
+        + table
+        + _section_title("📈 Évolution — historique", C_SUCCESS)
+        + chart
+    )
+    html = _html_shell(content)
+    _send(cfg, f"Alerte électricité — Jour {day * 100:.2f} c€/kWh", html,
+          {"elec_chart": elec_png})
+
+
+def send_daily_digest(cfg, latest_oil, latest_fuel, latest_elec, latest_gas,
+                      oil_records, fuel_records,
+                      oil_png: bytes, fuel_png: bytes, elec_png: bytes,
+                      gas_png: bytes | None = None) -> None:
+    """Send the 09:00 daily digest with current prices and trend charts."""
+    # Oil (mazout) section
+    if latest_oil:
+        oil_rows: list[tuple[str, str, str]] = [
+            ("Moins de 2 000 L (TTC)", f"{latest_oil.price_below_2000:.4f} €/L", ""),
+            ("À partir de 2 000 L (TTC)", f"{latest_oil.price_above_2000:.4f} €/L", ""),
+            ("Valable depuis", latest_oil.valid_from.strftime("%d/%m/%Y"),
+             ""),
+        ]
+    else:
+        oil_rows = [("Données non disponibles", "—", "")]
+
+    # Fuel (carburants) section
+    if latest_fuel:
+        fuel_rows: list[tuple[str, str, str]] = [
+            ("Essence 95 RON E5 (TTC)", f"{latest_fuel.essence_95_e5:.4f} €/L", ""),
+            ("Essence 98 RON E5 (TTC)", f"{latest_fuel.essence_98_e5:.4f} €/L", ""),
+            ("Diesel B7 (TTC)",         f"{latest_fuel.diesel_b7:.4f} €/L", ""),
+            ("Période",                 latest_fuel.period, ""),
+        ]
+    else:
+        fuel_rows = [("Données non disponibles", "—", "")]
+
+    # Electricity section
+    if latest_elec:
+        elec_rows: list[tuple[str, str, str]] = [
+            ("Tarif Jour (HP)", f"{latest_elec.price_day:.5f} €/kWh",
+             f"({latest_elec.price_day * 100:.2f} c€/kWh)"),
+            ("Tarif Nuit (HC)", f"{latest_elec.price_night:.5f} €/kWh",
+             f"({latest_elec.price_night * 100:.2f} c€/kWh)"),
+            ("Source", "TotalEnergies", _fr_month_year(latest_elec.valid_from)),
+        ]
+    else:
+        elec_rows = [("Données non disponibles", "—", "")]
+
+    # Gas section
+    if latest_gas:
+        gas_rows: list[tuple[str, str, str]] = [
+            ("Prix total TTC",   f"{latest_gas.total_kwh_ttc:.5f} €/kWh", ""),
+            ("En centimes",      f"{latest_gas.total_kwh_ttc * 100:.3f} c€/kWh", ""),
+            ("Source", "TotalEnergies", _fr_month_year(latest_gas.period)),
+        ]
+    else:
+        gas_rows = [("Données non disponibles", "—", "")]
+
+    content = (
+        _section_title("Gasoil de chauffage")
+        + _price_table(oil_rows)
+        + _chart_row("oil_chart", "Tendance mazout")
+        + _divider()
+        + _section_title("Carburants")
+        + _price_table(fuel_rows)
+        + _chart_row("fuel_chart", "Tendance carburants")
+        + _divider()
+        + _section_title("Électricité", C_SUCCESS)
+        + _price_table(elec_rows)
+        + _chart_row("elec_chart", "Tendance électricité")
+        + _divider()
+        + _section_title("Gaz naturel", COLOR_GAS)
+        + _price_table(gas_rows)
+        + (_chart_row("gas_chart", "Historique gaz naturel") if gas_png else "")
+    )
+    html = _html_shell(content)
+    date_str = datetime.now(BRUSSELS_TZ).strftime("%d %b %Y")
+    images = {"oil_chart": oil_png, "fuel_chart": fuel_png, "elec_chart": elec_png}
+    if gas_png:
+        images["gas_chart"] = gas_png
+    _send(cfg, f"Rapport quotidien — {date_str}", html, images)
+
+
+def send_weekly_summary(cfg, oil_records, fuel_records, latest_elec, latest_gas,
+                        oil_png: bytes, fuel_png: bytes, elec_png: bytes,
+                        gas_png: bytes | None = None) -> None:
+    """Send the Sunday 18:00 weekly summary with trend analysis."""
+    # Oil
+    if oil_records:
+        prices = [r.price_below_2000 for r in oil_records]
+        oil_rows: list[tuple[str, str, str]] = [
+            (f"Tarif au {oil_records[-1].valid_from.strftime('%d/%m/%Y')}",
+             f"{oil_records[-1].price_below_2000:.4f} €/L", "< 2 000 L"),
+            ("Minimum 30j", f"{min(prices):.4f} €/L", ""),
+            ("Maximum 30j", f"{max(prices):.4f} €/L", ""),
+            ("Variation nette",
+             f"{((oil_records[-1].price_below_2000 - oil_records[0].price_below_2000) / oil_records[0].price_below_2000 * 100):+.2f}%",
+             "vs il y a 30 jours"),
+        ]
+    else:
+        oil_rows = [("Données insuffisantes", "—", "")]
+
+    # Fuel
+    if fuel_records:
+        latest = fuel_records[-1]
+        fuel_rows: list[tuple[str, str, str]] = [
+            ("Essence 95 E5", f"{latest.essence_95_e5:.4f} €/L", latest.period),
+            ("Essence 98 E5", f"{latest.essence_98_e5:.4f} €/L", latest.period),
+            ("Diesel B7",     f"{latest.diesel_b7:.4f} €/L",     latest.period),
+        ]
+    else:
+        fuel_rows = [("Données insuffisantes", "—", "")]
+
+    # Electricity
+    if latest_elec:
+        elec_rows: list[tuple[str, str, str]] = [
+            ("Tarif Jour (HP)", f"{latest_elec.price_day:.5f} €/kWh",
+             f"({latest_elec.price_day * 100:.2f} c€/kWh)"),
+            ("Tarif Nuit (HC)", f"{latest_elec.price_night:.5f} €/kWh",
+             f"({latest_elec.price_night * 100:.2f} c€/kWh)"),
+            ("Source", "TotalEnergies", _fr_month_year(latest_elec.valid_from)),
+        ]
+    else:
+        elec_rows = [("Données insuffisantes", "—", "")]
+
+    # Gas
+    if latest_gas:
+        gas_rows: list[tuple[str, str, str]] = [
+            ("Prix total TTC",  f"{latest_gas.total_kwh_ttc:.5f} €/kWh", ""),
+            ("En centimes",     f"{latest_gas.total_kwh_ttc * 100:.3f} c€/kWh", ""),
+            ("Source", "TotalEnergies", _fr_month_year(latest_gas.period)),
+        ]
+    else:
+        gas_rows = [("Données insuffisantes", "—", "")]
+
+    content = (
+        _section_title("Gasoil de chauffage")
+        + _price_table(oil_rows)
+        + _chart_row("oil_chart", "Tendance mazout")
+        + _divider()
+        + _section_title("Carburants")
+        + _price_table(fuel_rows)
+        + _chart_row("fuel_chart", "Tendance carburants")
+        + _divider()
+        + _section_title("Électricité", C_SUCCESS)
+        + _price_table(elec_rows)
+        + _chart_row("elec_chart", "Tendance électricité")
+        + _divider()
+        + _section_title("Gaz naturel", COLOR_GAS)
+        + _price_table(gas_rows)
+        + (_chart_row("gas_chart", "Historique gaz naturel") if gas_png else "")
+    )
+    html = _html_shell(content)
+    week_str = datetime.now(BRUSSELS_TZ).strftime("semaine du %d %b %Y")
+    images = {"oil_chart": oil_png, "fuel_chart": fuel_png, "elec_chart": elec_png}
+    if gas_png:
+        images["gas_chart"] = gas_png
+    _send(cfg, f"Résumé hebdomadaire — {week_str}", html, images)
+
+
+def send_system_alert(cfg, source_name: str, error_message: str) -> None:
+    """Send a system alert email when a data source fails after 3 retries."""
+    banner = _alert_banner(
+        C_DANGER, "🚨",
+        f"Erreur Système — Source : {source_name}",
+        f"La source de données <strong>{source_name}</strong> a échoué après 3 tentatives.<br>"
+        f"<code style='font-family:monospace;font-size:12px;background:{C_BG};"
+        f"padding:2px 4px;border-radius:3px;'>{_escape_html(error_message)}</code>",
+    )
+    table = _price_table([
+        ("Source défaillante", source_name, ""),
+        ("Heure de l'erreur (Brussels)", _now_brussels(), ""),
+        ("Tentatives effectuées", "3 / 3", ""),
+    ])
+    content = banner + _section_title("🔧 Détails de l'Erreur", C_DANGER) + table
+    html = _html_shell(content)
+    try:
+        _send(cfg, f"Erreur système — {source_name}", html, {})
+    except Exception as exc:
+        # Do not re-raise system alert failures — log only
+        log.error("Failed to send system alert email: %s", exc)
+
+
+def send_startup_report(cfg,
+                        oil_result, oil_error: str | None,
+                        fuel_result, fuel_error: str | None,
+                        elec_result, elec_error: str | None,
+                        gas_result, gas_error: str | None,
+                        oil_png: bytes | None = None,
+                        fuel_png: bytes | None = None,
+                        elec_png: bytes | None = None,
+                        gas_png: bytes | None = None) -> None:
+    """
+    Send a single consolidated startup status email covering all four data sources.
+    """
+    errors = {
+        "Mazout":   oil_error,
+        "Carburants": fuel_error,
+        "Électricité": elec_error,
+        "Gaz naturel": gas_error,
+    }
+    failed_sources = [k for k, v in errors.items() if v]
+    has_error = bool(failed_sources)
+
+    if has_error:
+        banner = _alert_banner(
+            C_DANGER, "🚨",
+            "Démarrage — Erreur(s) détectée(s)",
+            f"Sources en erreur : <strong>{', '.join(failed_sources)}</strong>.",
+        )
+    else:
+        banner = ""
+
+    def _status_rows(result, error, fields: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+        if error:
+            return [("Statut", "❌ Échec", ""), ("Erreur", _escape_html(error[:200]), "")]
+        return fields + [("Statut", "✅ OK", "")]
+
+    oil_rows = _status_rows(oil_result, oil_error, [
+        ("Moins de 2 000 L (TTC)", f"{oil_result.price_below_2000:.4f} €/L", ""),
+        ("À partir de 2 000 L (TTC)", f"{oil_result.price_above_2000:.4f} €/L", ""),
+        ("Valable depuis", oil_result.valid_from.strftime("%d/%m/%Y"),
+         f"Tarif {oil_result.tariff_no}"),
+    ] if oil_result else [])
+
+    fuel_rows = _status_rows(fuel_result, fuel_error, [
+        ("Essence 95 E5 (TTC)", f"{fuel_result.essence_95_e5:.4f} €/L", ""),
+        ("Essence 98 E5 (TTC)", f"{fuel_result.essence_98_e5:.4f} €/L", ""),
+        ("Diesel B7 (TTC)",     f"{fuel_result.diesel_b7:.4f} €/L", ""),
+        ("Période",             fuel_result.period, ""),
+    ] if fuel_result else [])
+
+    elec_rows = _status_rows(elec_result, elec_error, [
+        ("Tarif Jour (HP)", f"{elec_result.price_day:.5f} €/kWh",
+         f"({elec_result.price_day * 100:.2f} c€/kWh)"),
+        ("Tarif Nuit (HC)", f"{elec_result.price_night:.5f} €/kWh",
+         f"({elec_result.price_night * 100:.2f} c€/kWh)"),
+        ("Source", "TotalEnergies", _fr_month_year(elec_result.valid_from)),
+    ] if elec_result else [])
+
+    gas_rows = _status_rows(gas_result, gas_error, [
+        ("Prix total TTC",  f"{gas_result.total_kwh_ttc:.5f} €/kWh", ""),
+        ("En centimes",     f"{gas_result.total_kwh_ttc * 100:.3f} c€/kWh", ""),
+        ("Source", "TotalEnergies", _fr_month_year(gas_result.period)),
+    ] if gas_result else [])
+
+    content = (
+        banner
+        + _section_title("Gasoil de chauffage", C_DANGER if oil_error else C_PRIMARY)
+        + _price_table(oil_rows)
+        + ((_chart_row("oil_chart", "Évolution mazout")) if oil_png and not oil_error else "")
+        + _divider()
+        + _section_title("Carburants", C_DANGER if fuel_error else C_PRIMARY)
+        + _price_table(fuel_rows)
+        + ((_chart_row("fuel_chart", "Évolution carburants")) if fuel_png and not fuel_error else "")
+        + _divider()
+        + _section_title("Électricité", C_DANGER if elec_error else C_SUCCESS)
+        + _price_table(elec_rows)
+        + ((_chart_row("elec_chart", "Évolution électricité")) if elec_png and not elec_error else "")
+        + _divider()
+        + _section_title("Gaz naturel", C_DANGER if gas_error else COLOR_GAS)
+        + _price_table(gas_rows)
+        + ((_chart_row("gas_chart", "Évolution gaz naturel")) if gas_png and not gas_error else "")
+    )
+    html = _html_shell(content)
+    subject = (
+        f"Démarrage — Erreur ({', '.join(failed_sources)})"
+        if has_error else
+        "Démarrage — Energy Monitor"
+    )
+    images = {}
+    if oil_png and not oil_error:
+        images["oil_chart"] = oil_png
+    if fuel_png and not fuel_error:
+        images["fuel_chart"] = fuel_png
+    if elec_png and not elec_error:
+        images["elec_chart"] = elec_png
+    if gas_png and not gas_error:
+        images["gas_chart"] = gas_png
+    try:
+        _send(cfg, subject, html, images)
+    except Exception as exc:
+        log.error("Failed to send startup report email: %s", exc)
+
+
+def _escape_html(text: str) -> str:
+    """Minimal HTML escaping for user-facing error messages."""
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+    )
