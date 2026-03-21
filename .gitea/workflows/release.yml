@@ -46,7 +46,7 @@ jobs:
             git rm -rf .gitea
             git commit -m "chore: exclude gitea internal files from github mirror"
           fi
-          git push --force github HEAD:main --tags
+          git push --force github HEAD:refs/heads/main --tags
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
