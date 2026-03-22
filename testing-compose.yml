@@ -1,8 +1,9 @@
 services:
   energy-monitor:
-    image: simonverbois/be-energy-monitor:latest
+    build: .
+    image: belgian-energy-monitor:latest
     container_name: energy-monitor
-    restart: unless-stopped
+    restart: no
     env_file:
       - .env
     environment:

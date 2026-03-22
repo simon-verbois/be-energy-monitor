@@ -324,18 +324,26 @@ class PetroleumScraper:
     def _extract_fuel_price(text: str, product_marker: str) -> float:
         """
         Find the line that contains `product_marker` and return the last
-        decimal number on it (= TVA incluse column in the fuel table).
+        decimal number in the valid price range (= TVA incluse column).
+
+        Filters out delta/variation columns (small values like 0.0198) by
+        only considering matches within [FUEL_PRICE_MIN, FUEL_PRICE_MAX].
         """
         for line in text.splitlines():
             if product_marker.lower() in line.lower():
+                # Primary: 4-decimal format (e.g. 1,7498)
                 matches = re.findall(r"\b(\d{1,2},\d{4})\b", line)
-                if matches:
-                    return float(matches[-1].replace(",", "."))
-                # Fallback: any decimal with 2-4 dp
+                prices = [float(m.replace(",", ".")) for m in matches
+                          if FUEL_PRICE_MIN < float(m.replace(",", ".")) < FUEL_PRICE_MAX]
+                if prices:
+                    return prices[-1]
+                # Fallback: 2-4 decimal format
                 matches = re.findall(r"\b(\d{1,2},\d{2,4})\b", line)
-                if matches:
-                    return float(matches[-1].replace(",", "."))
-                raise ScraperError(f"No price token on fuel line for '{product_marker}': {line!r}")
+                prices = [float(m.replace(",", ".")) for m in matches
+                          if FUEL_PRICE_MIN < float(m.replace(",", ".")) < FUEL_PRICE_MAX]
+                if prices:
+                    return prices[-1]
+                raise ScraperError(f"No price in valid range for '{product_marker}': {line!r}")
 
         raise ScraperError(f"Product '{product_marker}' not found in PDF.")
 

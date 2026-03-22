@@ -46,3 +46,6 @@ data:
 
   # Logging
   LOG_LEVEL: "INFO"
+
+  # Language
+  LANGUAGE: "fr"

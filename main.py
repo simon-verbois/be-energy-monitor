@@ -119,6 +119,7 @@ class Config:
     ENABLE_WEEKLY_REPORT:    bool  = field(default_factory=lambda: os.environ.get("ENABLE_WEEKLY_REPORT", "true").lower() == "true")
     DB_PATH:                 str   = field(default_factory=lambda: os.environ.get("DB_PATH", "data/energy.db"))
     CHART_MONTHS:            int   = field(default_factory=lambda: int(os.environ.get("CHART_MONTHS", "3")))
+    LANGUAGE:                str   = field(default_factory=lambda: os.environ.get("LANGUAGE", "fr").lower())
 
 
 # ── Application state ─────────────────────────────────────────────────────────
@@ -134,7 +135,7 @@ gas_scraper:       GasScraper
 
 def _build_elec_chart(session, months: int, ceiling: float) -> bytes:
     records = get_elec_last_n_months(session, months)
-    return generate_elec_chart(records, ceiling=ceiling, months=months)
+    return generate_elec_chart(records, ceiling=ceiling, months=months, lang=cfg.LANGUAGE)
 
 
 # ── Alert helpers ─────────────────────────────────────────────────────────────
@@ -197,7 +198,7 @@ def job_fetch_petroleum() -> None:
             avg = get_oil_7day_avg(session)
             try:
                 send_oil_alert(cfg, oil_result, avg,
-                               generate_oil_chart(get_oil_last_n_months(session, cfg.CHART_MONTHS), months=cfg.CHART_MONTHS))
+                               generate_oil_chart(get_oil_last_n_months(session, cfg.CHART_MONTHS), months=cfg.CHART_MONTHS, lang=cfg.LANGUAGE))
             except Exception as exc:
                 log.error("Failed to send oil alert: %s", exc)
 
@@ -274,10 +275,10 @@ def job_daily_digest() -> None:
         oil_records  = get_oil_last_n_months(session, months)
         fuel_records = get_fuel_last_n_months(session, months)
         gas_records  = get_all_gas_prices(session)
-        oil_png  = generate_oil_chart(oil_records, months=months)
-        fuel_png = generate_fuel_chart(fuel_records, months=months)
+        oil_png  = generate_oil_chart(oil_records, months=months, lang=cfg.LANGUAGE)
+        fuel_png = generate_fuel_chart(fuel_records, months=months, lang=cfg.LANGUAGE)
         elec_png = _build_elec_chart(session, months, cfg.ELEC_PRICE_CEILING)
-        gas_png  = generate_gas_chart(gas_records)
+        gas_png  = generate_gas_chart(gas_records, lang=cfg.LANGUAGE)
 
     try:
         send_daily_digest(cfg, latest_oil, latest_fuel, latest_elec, latest_gas,
@@ -299,10 +300,10 @@ def job_weekly_summary() -> None:
         oil_records  = get_oil_last_n_months(session, months)
         fuel_records = get_fuel_last_n_months(session, months)
         gas_records  = get_all_gas_prices(session)
-        oil_png  = generate_oil_chart(oil_records, months=months)
-        fuel_png = generate_fuel_chart(fuel_records, months=months)
+        oil_png  = generate_oil_chart(oil_records, months=months, lang=cfg.LANGUAGE)
+        fuel_png = generate_fuel_chart(fuel_records, months=months, lang=cfg.LANGUAGE)
         elec_png = _build_elec_chart(session, months, cfg.ELEC_PRICE_CEILING)
-        gas_png  = generate_gas_chart(gas_records)
+        gas_png  = generate_gas_chart(gas_records, lang=cfg.LANGUAGE)
 
     try:
         send_weekly_summary(cfg, oil_records, fuel_records, latest_elec, latest_gas,
@@ -467,10 +468,10 @@ def main() -> None:
     months = cfg.CHART_MONTHS
     try:
         with SessionLocal() as session:
-            oil_png  = generate_oil_chart(get_oil_last_n_months(session, months), months=months)
-            fuel_png = generate_fuel_chart(get_fuel_last_n_months(session, months), months=months)
+            oil_png  = generate_oil_chart(get_oil_last_n_months(session, months), months=months, lang=cfg.LANGUAGE)
+            fuel_png = generate_fuel_chart(get_fuel_last_n_months(session, months), months=months, lang=cfg.LANGUAGE)
             elec_png = _build_elec_chart(session, months, cfg.ELEC_PRICE_CEILING)
-            gas_png  = generate_gas_chart(get_all_gas_prices(session))
+            gas_png  = generate_gas_chart(get_all_gas_prices(session), lang=cfg.LANGUAGE)
     except Exception as exc:
         log.warning("Could not generate startup charts: %s", exc)
         oil_png = fuel_png = elec_png = gas_png = None

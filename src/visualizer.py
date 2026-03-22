@@ -13,6 +13,8 @@ import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from src.i18n import get_t
+
 import matplotlib
 matplotlib.use("Agg")  # Must be set before any other matplotlib import
 
@@ -80,7 +82,7 @@ def _to_bytes(fig: plt.Figure) -> bytes:
 
 # ── Oil trend chart ───────────────────────────────────────────────────────────
 
-def generate_oil_chart(oil_records, months: int = 3) -> bytes:
+def generate_oil_chart(oil_records, months: int = 3, lang: str = "fr") -> bytes:
     """
     Heating oil (mazout) trend chart.
 
@@ -89,7 +91,7 @@ def generate_oil_chart(oil_records, months: int = 3) -> bytes:
         months:      number of months shown in the chart title.
     """
     if not oil_records:
-        return _empty_chart(f"Pas de données mazout sur {months} mois.")
+        return _empty_chart(get_t(lang)["chart_oil_empty"].format(months=months))
 
     dates  = [r.valid_from for r in oil_records]
     below  = [r.price_below_2000 for r in oil_records]
@@ -98,9 +100,9 @@ def generate_oil_chart(oil_records, months: int = 3) -> bytes:
     fig, ax = plt.subplots(figsize=FIGURE_SIZE, facecolor="white")
 
     ax.plot(dates, below, color=COLOR_BLUE, linewidth=2, marker="o", markersize=4,
-            label="< 2 000 L (TTC)")
+            label=get_t(lang)["chart_oil_legend_below"])
     ax.plot(dates, above, color=COLOR_RED,  linewidth=2, marker="s", markersize=4,
-            label="≥ 2 000 L (TTC)")
+            label=get_t(lang)["chart_oil_legend_above"])
 
     _style_axes(ax, "€ / L")
     _auto_date_fmt(ax, fig, dates)
@@ -109,8 +111,7 @@ def generate_oil_chart(oil_records, months: int = 3) -> bytes:
     ax.set_ylim(min(all_prices) * 0.99, max(all_prices) * 1.01)
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.4f"))
 
-    ax.set_title(f"Gasoil de Chauffage — {months} dernier(s) mois (TTC)",
-                 color=COLOR_TEXT, fontsize=13, pad=12)
+    ax.set_title(get_t(lang)["chart_oil_title"].format(months=months), color=COLOR_TEXT, fontsize=13, pad=12)
     ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
     fig.tight_layout()
     log.debug("Oil chart: %d points, %d months", len(dates), months)
@@ -119,7 +120,7 @@ def generate_oil_chart(oil_records, months: int = 3) -> bytes:
 
 # ── Electricity tariff chart (TotalEnergies — Jour / Nuit) ───────────────────
 
-def generate_elec_chart(elec_records, ceiling: float | None = None, months: int = 3) -> bytes:
+def generate_elec_chart(elec_records, ceiling: float | None = None, months: int = 3, lang: str = "fr") -> bytes:
     """
     Electricity tariff trend chart showing day and night prices over N months.
 
@@ -129,7 +130,7 @@ def generate_elec_chart(elec_records, ceiling: float | None = None, months: int 
         months:       number of months shown in the chart title.
     """
     if not elec_records:
-        return _empty_chart(f"Pas de données électricité sur {months} mois.")
+        return _empty_chart(get_t(lang)["chart_elec_empty"].format(months=months))
 
     labels      = [r.valid_from.strftime("%b %Y") for r in elec_records]
     day_prices  = [r.price_day   for r in elec_records]
@@ -140,13 +141,13 @@ def generate_elec_chart(elec_records, ceiling: float | None = None, months: int 
     fig, ax = plt.subplots(figsize=FIGURE_SIZE, facecolor="white")
 
     ax.plot(x, day_prices, color=COLOR_ORANGE, linewidth=2,
-            marker="o", markersize=5, label="Jour — HP")
+            marker="o", markersize=5, label=get_t(lang)["chart_elec_legend_day"])
     ax.plot(x, night_prices, color=COLOR_BLUE, linewidth=2,
-            marker="s", markersize=5, label="Nuit — HC")
+            marker="s", markersize=5, label=get_t(lang)["chart_elec_legend_night"])
 
     if ceiling is not None:
         ax.axhline(y=ceiling, color=COLOR_RED, linewidth=1.5, linestyle="--",
-                   label=f"Seuil : {ceiling * 100:.2f} c€/kWh", zorder=2)
+                   label=get_t(lang)["chart_elec_legend_ceiling"].format(price=ceiling * 100), zorder=2)
 
     _style_axes(ax, "€ / kWh")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.4f"))
@@ -159,8 +160,7 @@ def generate_elec_chart(elec_records, ceiling: float | None = None, months: int 
     y_max = max(all_prices + ref) * 1.03
     ax.set_ylim(y_min, y_max)
 
-    ax.set_title(f"Électricité TotalEnergies — {months} dernier(s) mois",
-                 color=COLOR_TEXT, fontsize=13, pad=12)
+    ax.set_title(get_t(lang)["chart_elec_title"].format(months=months), color=COLOR_TEXT, fontsize=13, pad=12)
     ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
     fig.tight_layout()
     log.debug("Elec chart: %d tariff records, %d months", len(labels), months)
@@ -169,7 +169,7 @@ def generate_elec_chart(elec_records, ceiling: float | None = None, months: int 
 
 # ── Fuel trend chart ──────────────────────────────────────────────────────────
 
-def generate_fuel_chart(fuel_records, months: int = 3) -> bytes:
+def generate_fuel_chart(fuel_records, months: int = 3, lang: str = "fr") -> bytes:
     """
     Fuel (Essence 95/98 E5, Diesel B7) monthly trend chart.
 
@@ -178,7 +178,7 @@ def generate_fuel_chart(fuel_records, months: int = 3) -> bytes:
         months:       number of months shown in the title.
     """
     if not fuel_records:
-        return _empty_chart(f"Pas de données carburants sur {months} mois.")
+        return _empty_chart(get_t(lang)["chart_fuel_empty"].format(months=months))
 
     periods = [r.period for r in fuel_records]
     ess_95  = [r.essence_95_e5 for r in fuel_records]
@@ -189,11 +189,11 @@ def generate_fuel_chart(fuel_records, months: int = 3) -> bytes:
 
     fig, ax = plt.subplots(figsize=FIGURE_SIZE, facecolor="white")
     ax.plot(x, ess_95, color=COLOR_BLUE,   linewidth=2, marker="o", markersize=5,
-            label="Essence 95 E5 (TTC)")
+            label=get_t(lang)["chart_fuel_legend_95"])
     ax.plot(x, ess_98, color=COLOR_PURPLE, linewidth=2, marker="s", markersize=5,
-            label="Essence 98 E5 (TTC)")
+            label=get_t(lang)["chart_fuel_legend_98"])
     ax.plot(x, diesel, color=COLOR_ORANGE, linewidth=2, marker="^", markersize=5,
-            label="Diesel B7 (TTC)")
+            label=get_t(lang)["chart_fuel_legend_diesel"])
 
     _style_axes(ax, "€ / L")
     ax.set_xticks(x)
@@ -203,8 +203,7 @@ def generate_fuel_chart(fuel_records, months: int = 3) -> bytes:
     ax.set_ylim(min(all_prices) * 0.98, max(all_prices) * 1.02)
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.4f"))
 
-    ax.set_title(f"Carburants — {months} dernier(s) mois (TTC)",
-                 color=COLOR_TEXT, fontsize=13, pad=12)
+    ax.set_title(get_t(lang)["chart_fuel_title"].format(months=months), color=COLOR_TEXT, fontsize=13, pad=12)
     ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
     fig.tight_layout()
     log.debug("Fuel chart: %d months", len(periods))
@@ -213,7 +212,7 @@ def generate_fuel_chart(fuel_records, months: int = 3) -> bytes:
 
 # ── Gas trend chart (all quarters) ───────────────────────────────────────────
 
-def generate_gas_chart(gas_records, months: int = 0) -> bytes:
+def generate_gas_chart(gas_records, months: int = 0, lang: str = "fr") -> bytes:
     """
     Natural gas tariff trend chart (TotalEnergies monthly data).
 
@@ -222,7 +221,7 @@ def generate_gas_chart(gas_records, months: int = 0) -> bytes:
         months:      number of months shown in the chart title (0 = all data).
     """
     if not gas_records:
-        return _empty_chart("Pas de données gaz naturel disponibles.")
+        return _empty_chart(get_t(lang)["chart_gas_empty"])
 
     periods = [r.period for r in gas_records]
     prices  = [r.total_kwh_ttc * 100 for r in gas_records]   # display in c€/kWh
@@ -232,7 +231,7 @@ def generate_gas_chart(gas_records, months: int = 0) -> bytes:
     fig, ax = plt.subplots(figsize=FIGURE_SIZE, facecolor="white")
 
     ax.plot(x, prices, color=COLOR_TEAL, linewidth=2, marker="o", markersize=5,
-            label="Gaz naturel (TTC)")
+            label=get_t(lang)["chart_gas_legend"])
 
     _style_axes(ax, "c€ / kWh (TTC)")
     ax.set_xticks(x)
@@ -242,9 +241,9 @@ def generate_gas_chart(gas_records, months: int = 0) -> bytes:
     ax.set_ylim(min(all_prices) * 0.97, max(all_prices) * 1.03)
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
 
-    title_suffix = f"{months} dernier(s) mois" if months else "historique complet"
-    ax.set_title(f"Gaz Naturel — {title_suffix} (TTC)",
-                 color=COLOR_TEXT, fontsize=13, pad=12)
+    t = get_t(lang)
+    title = t["chart_gas_title_months"].format(months=months) if months else t["chart_gas_title_all"]
+    ax.set_title(title, color=COLOR_TEXT, fontsize=13, pad=12)
     ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
     fig.tight_layout()
     log.debug("Gas chart: %d months", len(periods))

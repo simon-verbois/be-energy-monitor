@@ -1,3 +1,4 @@
 .claude
 .env
 data/
+__pycache__
