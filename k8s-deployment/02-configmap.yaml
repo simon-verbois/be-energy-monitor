@@ -1,0 +1,48 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: be-energy-monitor-config
+  namespace: be-energy-monitor
+data:
+  # SMTP Configuration
+  SMTP_SERVER: "192.168.0.50"
+  SMTP_AUTH: "none"
+  SMTP_PORT: "25"
+  SMTP_FROM: "Energy Monitor <noreply@example.org>"
+
+  # Alert Recipients
+  ALERT_EMAIL_TO: "recipient@example.org"
+
+  # Alert Thresholds — Oil
+  OIL_ALERT_ENABLED: "true"
+  OIL_ALERT_THRESHOLD_PERCENT: "5"
+
+  # Alert Thresholds — Fuel
+  FUEL_ALERT_ENABLED: "false"
+  FUEL_ALERT_THRESHOLD_PERCENT: "3"
+
+  # Alert Thresholds — Electricity
+  ELEC_ALERT_ENABLED: "true"
+  ELEC_PRICE_CEILING: "0.10"
+
+  # Alert Thresholds — Gas
+  GAS_ALERT_ENABLED: "false"
+  GAS_ALERT_THRESHOLD_PERCENT: "5"
+
+  # Chart Window
+  CHART_MONTHS: "3"
+
+  # Scheduled Reports
+  ENABLE_DAILY_REPORT: "true"
+  ENABLE_WEEKLY_REPORT: "true"
+
+  # Timezone
+  TZ: "Europe/Brussels"
+
+  # TotalEnergies PDF URLs
+  TOTALENERGIES_ELEC_PDF_URL: "https://totalenergies.be/static/marketing-documents/b2c/tariff-card/latest/MYESSENTIAL_ELECTRICITY_WAL_FR.pdf"
+  TOTALENERGIES_GAS_PDF_URL: "https://totalenergies.be/static/marketing-documents/b2c/tariff-card/latest/MYESSENTIAL_GAS_WAL_FR.pdf"
+
+  # Logging
+  LOG_LEVEL: "INFO"

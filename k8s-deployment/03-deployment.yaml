@@ -1,0 +1,44 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: be-energy-monitor
+  namespace: be-energy-monitor
+  labels:
+    app: be-energy-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: be-energy-monitor
+  template:
+    metadata:
+      labels:
+        app: be-energy-monitor
+    spec:
+      containers:
+      - name: be-energy-monitor
+        image: simonverbois/be-energy-monitor:latest
+        envFrom:
+        - configMapRef:
+            name: be-energy-monitor-config
+        env:
+        - name: DB_PATH
+          value: /data/energy.db
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - "-c"
+            - "import sqlite3, os; sqlite3.connect(os.environ.get('DB_PATH','/data/energy.db')).close()"
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: be-energy-monitor-data
